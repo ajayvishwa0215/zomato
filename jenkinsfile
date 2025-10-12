@@ -1,97 +1,87 @@
 pipeline {
     agent any
+
     tools {
         jdk 'jdk17'
         nodejs 'node23'
     }
+
     environment {
-        SCANNER_HOME=tool 'sonar-scanner'
+        SCANNER_HOME = tool 'sonar-scanner'
     }
+
     stages {
-        stage ("clean workspace") {
-            steps {
-                cleanWs()
-            }
+        stage("Clean Workspace") {
+            steps { cleanWs() }
         }
-        stage ("Git Checkout") {
-            steps {
-                git branch: 'main', url: 'https://github.com/ajayvishwa0215/zomato.git'
-            }
+
+        stage("Git Checkout") {
+            steps { git branch: 'main', url: 'https://github.com/ajayvishwa0215/zomato.git' }
         }
-        stage("Sonarqube Analysis"){
-            steps{
+
+        stage("SonarQube Analysis") {
+            steps {
                 withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=zomato \
-                    -Dsonar.projectKey=zomato '''
+                    sh '''$SCANNER_HOME/bin/sonar-scanner \
+                        -Dsonar.projectName=zomato \
+                        -Dsonar.projectKey=zomato'''
                 }
             }
         }
-        stage("Code Quality Gate"){
-           steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
-                }
-            } 
-        }
-        stage("Install NPM Dependencies") {
+
+        stage("Quality Gate") {
             steps {
-                sh "npm install"
+                waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
             }
         }
-        stage('OWASP FS SCAN') {
+
+        stage("Install Dependencies") {
+            steps { sh "npm install" }
+        }
+
+        stage("Trivy File Scan") {
+            steps { sh "trivy fs . > trivy.txt" }
+        }
+
+        stage("Build & Push Docker Image") {
             steps {
-                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit -n', odcInstallation: 'DP-Check'
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                withDockerRegistry(credentialsId: 'docker', url: 'https://index.docker.io/v1/') {
+                    sh '''
+                        docker build -t zomato .
+                        docker tag zomato ajayvishwa0215/zomato:latest
+                        docker push ajayvishwa0215/zomato:latest
+                    '''
+                }
+            }
+        }
+
+        stage("Deploy to Kubernetes") {
+            steps {
+                sh '''
+                    # Start Minikube (existing driver used automatically)
+                    minikube start || true
+
+                    # Apply Kubernetes manifests (image pulled from DockerHub)
+                    kubectl apply -f Kubernetes/
+
+                    # Wait for deployment to complete
+                    kubectl rollout status deployment/zomato
+
+                    # Print access URL
+                    minikube service zomato --url
+                '''
+            }
+        }
     }
-}
-        stage ("Trivy File Scan") {
-            steps {
-                sh "trivy fs . > trivy.txt"
-            }
-        }
-        stage ("Build Docker Image") {
-            steps {
-                sh "docker build -t zomato ."
-            }
-        }
-        stage ("Tag & Push to DockerHub") {
-            steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker') {
-                        sh "docker tag zomato ajayvishwa0215/zomato:latest "
-                        sh "docker push ajayvishwa0215/zomato:latest "
-                    }
-                }
-            }
-        }
-        stage ("Deploy to Container") {
-            steps {
-                sh 'docker run -d --name zomato -p 3000:3000 ajayvishwa0215/zomato:latest'
-            }
-        }
-    }
+
     post {
-    always {
-        emailext attachLog: true,
-            subject: "'${currentBuild.result}'",
-            body: """
-                <html>
-                <body>
-                    <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Project: ${env.JOB_NAME}</p>
-                    </div>
-                    <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
-                    </div>
-                    <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">URL: ${env.BUILD_URL}</p>
-                    </div>
-                </body>
-                </html>
-            """,
-            to: 'kastrokiran@gmail.com',
-            mimeType: 'text/html',
-            attachmentsPattern: 'trivy.txt'
+        always {
+            emailext(
+                subject: "${currentBuild.result} - ${env.JOB_NAME}",
+                body: "Build #${env.BUILD_NUMBER} result: ${currentBuild.result}\n${env.BUILD_URL}",
+                to: 'ajayvishwa0215@gmail.com',
+                attachmentsPattern: 'trivy.txt'
+            )
         }
     }
 }
