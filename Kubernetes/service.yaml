@@ -1,14 +1,20 @@
-apiVersion: v1
-kind: Service
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: zomato
-  labels:
-    app: zomato
 spec:
-  type: NodePort
-  ports:
-  - port: 3000
-    targetPort: 3000
-    nodePort: 30001
+  replicas: 2
   selector:
-    app: zomato
+    matchLabels:
+      app: zomato
+  template:
+    metadata:
+      labels:
+        app: zomato
+    spec:
+      containers:
+      - name: zomato
+        image: ajayvishwa0215/zomato:latest
+        ports:
+        - containerPort: 3000
+          hostPort: 30001   # <--- bind pod port directly to host
